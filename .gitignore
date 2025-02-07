@@ -1,0 +1,10 @@
+*.pyc
+__pycache
+__pycache__
+.DS_Store
+.env
+venv
+.idea
+.sentry-native/
+exception_links.json
+logs

@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  app:
+    container_name: arabic_news_scraper
+    build:
+      context: .
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always
