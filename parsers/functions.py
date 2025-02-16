@@ -12,7 +12,8 @@ from utils.func import load_from_file_json, write_to_file_json
 class Functions():
     def __init__(self):
         self.max_count_try = 20
-        self.stop_date_create = datetime.today() - timedelta(days=90)
+        # self.stop_date_create = datetime.today() - timedelta(days=90)
+        self.stop_date_create = datetime.today() - timedelta(days=140)
         self.proxies_list = get_proxies()
         self.logger = Logger().get_logger(__name__)
         self.db_client = PostgreSQLTable(os.getenv("TABLE_NAME"))
