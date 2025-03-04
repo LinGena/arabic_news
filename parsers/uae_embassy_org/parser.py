@@ -63,7 +63,7 @@ class NewsUaeEmbassyOrg(CheckNewsModel):
                 res['news_title']=self.clear_text(soup.find('div',class_='details-info').find('h2').get_text())
                 res['news_body']=self.clear_text(full_text)
                 res['news_date']=data['date']
-                res['is_about']=self.check_aws_bedrock(self.speaker, res, lang='en')
+                res.update(self.check_aws_bedrock(self.speaker, res, lang='en'))
                 self.db_client.insert_row(res)
             except Exception as ex:
                 self.logger.error(f'{ex}, link: {link}')

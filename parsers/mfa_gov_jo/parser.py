@@ -62,7 +62,7 @@ class NewsMfaGovJo(CheckNewsModel):
                 res['news_title']=self.clear_text(soup.find('span',id='ContentMain_lblContentTitle').get_text())
                 res['news_body']=self.clear_text(soup.find('span',id='ContentMain_lblBody').get_text())
                 res['news_date']=date
-                res['is_about']=self.check_aws_bedrock(self.speaker, res)
+                res.update(self.check_aws_bedrock(self.speaker, res))
                 self.db_client.insert_row(res)
             except Exception as ex:
                 self.logger.error(f'{ex}, link: {link}')

@@ -41,7 +41,7 @@ class NewsSpaGovSa(CheckNewsModel):
                     res['news_date']=self.get_news_create(link.get('published_at'))
                     if self.stop_parse_next:
                         break
-                    res['is_about']=self.check_aws_bedrock(speaker, res)
+                    res.update(self.check_aws_bedrock(speaker, res))
                     if res['is_about'] or i == 1:
                         if res['is_about']:
                             res['speaker'] = speaker

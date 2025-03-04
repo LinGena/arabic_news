@@ -1,4 +1,5 @@
 import time
+import json
 from typing import Optional, Any, List
 from llama_index.llms.bedrock import Bedrock
 from llama_index.core.constants import (DEFAULT_TEMPERATURE,)
@@ -205,12 +206,12 @@ class CheckNewsModel(Functions):
             response = self.llm.as_chat(prompt)
             self.llm.clear()
             response = str(response).strip().lower()
-            print('model response: ', response)
-            if "true" in response:
-                return True
+            print(response)
+            response_json = json.loads(response)
+            return response_json
         except Exception as ex:
             self.logger.error(ex)
-        return False
+        return {'is_about':False, 'explanation':None}
         
     def get_prompt(self, speaker: str, article: str, lang: str = 'ar') -> str:
         if lang == 'ar':
@@ -229,8 +230,12 @@ Instructions:
 
 Article Data: 
 {article}
-Expected Response Format: True or False.
+Output Format (IMPORTANT):
+Please output your final answer **in valid JSON** with exactly two fields:
+1. "is_about": a boolean (true or false),
+2. "explanation": xplanation why this is true or false in English, if you need to include words from other languages for explanation - you can. Please explain step by step why this is true or false 
 """
+        
         return prompt
     
 

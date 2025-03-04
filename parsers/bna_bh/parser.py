@@ -51,7 +51,7 @@ class NewsBnaBh(CheckNewsModel):
                 res['news_date']=self.get_news_create(soup.find('dd',class_='createdby'))
                 if self.stop_parse_next:
                     break
-                res['is_about']=self.check_aws_bedrock(self.speaker, res)
+                res.update(self.check_aws_bedrock(self.speaker, res))
                 self.db_client.insert_row(res)
             except Exception as ex:
                 self.logger.error(ex)

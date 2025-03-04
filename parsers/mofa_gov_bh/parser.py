@@ -67,7 +67,7 @@ class NewsMofaGovBh(CheckNewsModel):
                     res['news_title']=self.clear_text(news_title)
                     res['news_body']=self.clear_text(news_block.get_text().replace(news_title,'').strip())
                     res['news_date']=news_date
-                    res['is_about']=self.check_aws_bedrock(speaker, res)
+                    res.update(self.check_aws_bedrock(speaker, res))
                     if res['is_about'] or i == 1:
                         if res['is_about']:
                             res['speaker'] = speaker

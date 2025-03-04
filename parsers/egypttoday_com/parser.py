@@ -64,7 +64,7 @@ class NewsEgypttoday(CheckNewsModel):
                 res['news_title']=self.clear_text(soup.find('h1',class_='ArticleTitleH1').get_text())
                 res['news_body']=self.clear_text(soup.find('div',class_='ArticleDescription').get_text())
                 res['news_date']=date
-                res['is_about']=self.check_aws_bedrock(self.speaker, res, lang='en')
+                res.update(self.check_aws_bedrock(self.speaker, res, lang='en'))
                 self.db_client.insert_row(res)
             except Exception as ex:
                 self.logger.error(f'{ex}, link: {link}')
