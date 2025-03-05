@@ -211,7 +211,7 @@ class CheckNewsModel(Functions):
             return response_json
         except Exception as ex:
             self.logger.error(ex)
-        return {'is_about':False, 'explanation':None}
+        return {'is_about':False, 'explanation':f'error: {ex}'}
         
     def get_prompt(self, speaker: str, article: str, lang: str = 'ar') -> str:
         if lang == 'ar':
