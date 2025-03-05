@@ -200,18 +200,20 @@ class CheckNewsModel(Functions):
                            )
 
     def check_aws_bedrock(self, speaker: str, news: dict, lang: str = 'ar') -> bool:
+        status = False
         try:
             article = f"{news.get('news_title')} \n{news.get('news_body')}"
             prompt = self.get_prompt(speaker, article, lang)
             response = self.llm.as_chat(prompt)
             self.llm.clear()
-            response = str(response).strip().lower()
             print(response)
+            if 'true' in str(response).strip().lower():
+                status = True
             response_json = json.loads(response)
             return response_json
         except Exception as ex:
             self.logger.error(ex)
-        return {'is_about':False, 'explanation':'error'}
+        return {'is_about':status, 'explanation':'error'}
         
     def get_prompt(self, speaker: str, article: str, lang: str = 'ar') -> str:
         if lang == 'ar':
