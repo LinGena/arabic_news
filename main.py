@@ -19,6 +19,7 @@ from parsers.mohamedbinzayed_ae.parser import NewsMohamedbinzayedAe
 from parsers.mofa_gov_ae.parser import NewsMofaGovAe
 from parsers.uaeun_org.parser import NewsUaeunOrg
 from parsers.uae_embassy_org.parser import NewsUaeEmbassyOrg
+from parsers.mfa_gov_eg.parser import NewsMfaGovEg
 
 
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
@@ -97,6 +98,10 @@ def parse_uae_embassy_org():
     speaker = 'Yousef Al Otaiba'
     # NewsUaeEmbassyOrg(speaker).get()
 
+def parse_mfa_gov_eg():
+    speaker = 'بدر عبد العاطي'
+    NewsMfaGovEg(speaker).get()
+
 def main():
     functions = [
         parse_bna,
@@ -115,7 +120,9 @@ def main():
         parse_mohamedbinzayed_ae,
         parse_mofa_gov_ae,
         parse_uaeun_org,
-        parse_uae_embassy_org
+        parse_uae_embassy_org,
+        parse_mfa_gov_eg,
+
     ]
     for func in functions:
         try:
