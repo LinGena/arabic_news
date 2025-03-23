@@ -174,6 +174,8 @@ class NewsCrownprinceBh(CheckNewsModel):
                 # Skip items without dates
                 continue
 
+            link_elem = item.find('a', class_='asp_res_url')
+
             # Check if date is in the acceptable range
             if not self.check_date(date):
                 # Old date detected, add to exception list
@@ -184,7 +186,6 @@ class NewsCrownprinceBh(CheckNewsModel):
                         self.logger.info(f"Adding old link to exceptions (date: {date}): {old_link}")
                 continue
 
-            link_elem = item.find('a', class_='asp_res_url')
             if link_elem and 'href' in link_elem.attrs:
                 link = link_elem['href']
 
