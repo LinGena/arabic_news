@@ -6,6 +6,9 @@ from parsers.model import CheckNewsModel
 from utils.func import write_to_file_json
 import requests
 import re
+import random
+import time
+
 
 class NewsMfaGovEg(CheckNewsModel):
     def __init__(self, speaker: str):
@@ -20,18 +23,80 @@ class NewsMfaGovEg(CheckNewsModel):
         try:
             for news_keyword in self.get_search_terms():
                 page = 0
+                self.logger.info(f"Processing keyword: {news_keyword}")
                 search_news = self.get_response(news_keyword, page)
                 links = self.get_links_from_search_news(search_news)
 
-                if links is not None:
+                if links is not None and links:
+                    self.logger.info(f"Found {len(links)} links for keyword: {news_keyword}")
                     self.get_links_content(links, news_keyword)
                 else:
                     self.logger.warning(f"No links found for keyword: {news_keyword}")
 
         except Exception as ex:
-            self.logger.error(ex)
+            self.logger.error(f"Error in main processing loop: {ex}")
         finally:
             write_to_file_json(self.filename_exeption, self.exception_links)
+
+    def is_date_too_old(self, date_str: str) -> bool:
+        """
+        Check if a date string is older than the stop_date_create
+
+        Args:
+            date_str: Date string in YYYY-MM-DD format
+
+        Returns:
+            bool: True if date is too old, False otherwise
+        """
+        try:
+            if not date_str:
+                return True
+
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            return date_obj < self.stop_date_create
+        except Exception as ex:
+            self.logger.warning(f"Error checking date: {ex}, assuming date is too old")
+            return True
+
+    def validate_date(self, date_str: str) -> bool:
+        """
+        Validate that a date string is:
+        1. In proper format
+        2. Not in the far future
+        3. Not too old (before stop_date_create)
+
+        Args:
+            date_str: Date string in YYYY-MM-DD format
+
+        Returns:
+            bool: True if date is valid, False otherwise
+        """
+        try:
+            if not date_str:
+                return False
+
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            current_date = datetime.now()
+
+            # Date can't be more than 7 days in the future (allowing for timezone differences)
+            if date_obj > current_date.replace(day=current_date.day + 7):
+                self.logger.warning(f"Date is in the far future: {date_str}")
+                return False
+
+            # Date can't be before stop_date_create
+            if date_obj < self.stop_date_create:
+                self.logger.info(f"Date is too old: {date_str}")
+                return False
+
+            # Make sure year is reasonable (not 1967, etc.)
+            if date_obj.year < 2000:
+                self.logger.warning(f"Date year too old: {date_str}")
+                return False
+
+            return True
+        except Exception as ex:
+            self.logger.warning(f"Error validating date: {ex}")
+            return False
 
     def get_links_from_search_news(self, search_news: str) -> list:
         links = []
@@ -54,18 +119,149 @@ class NewsMfaGovEg(CheckNewsModel):
                 continue
 
             for news_block in news_blocks:
-                # Each news item has an anchor tag with a link
-                a_tag = news_block.find('a')
-                if a_tag and a_tag.has_attr('href'):
-                    link = a_tag.get('href')
-                    # Handle relative URLs
-                    if not link.startswith(('http://', 'https://')):
-                        link = self.domain + link.lstrip('/')
+                try:
+                    # Each news item has an anchor tag with a link
+                    a_tag = news_block.find('a')
+                    if a_tag and a_tag.has_attr('href'):
+                        link = a_tag.get('href')
+                        # Handle relative URLs
+                        if not link.startswith(('http://', 'https://')):
+                            link = self.domain + link.lstrip('/')
 
-                    if not self.db_check_link(link, self.speaker):
+                        # Check if this link has already been processed
+                        if link in self.exception_links:
+                            self.logger.debug(f"Skipping exception link: {link}")
+                            continue
+
+                        if self.db_check_link(link, self.speaker):
+                            self.logger.debug(f"Skipping already processed link: {link}")
+                            continue
+
+                        # Try to extract date from URL if possible
+                        date_match = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/', link)
+                        if date_match:
+                            year, month, day = date_match.groups()
+                            try:
+                                date_str = f"{year}-{int(month):02d}-{int(day):02d}"
+                                if self.is_date_too_old(date_str):
+                                    self.logger.info(f"Skipping link with old date in URL: {link}, date: {date_str}")
+                                    continue
+                            except Exception:
+                                # If date parsing fails, we'll check the actual content later
+                                pass
+
                         links.append(link)
+                except Exception as ex:
+                    self.logger.warning(f"Error processing search result item: {ex}")
+                    continue
 
         return links
+
+    def extract_date_from_content(self, soup: BeautifulSoup, news_body: str) -> tuple:
+        """
+        Extract date from content using multiple methods and validate it
+
+        Args:
+            soup: BeautifulSoup object of the page
+            news_body: Extracted news body text
+
+        Returns:
+            tuple: (date_str, stop_parse) where date_str is in YYYY-MM-DD format and stop_parse is True if date is invalid
+        """
+        # Method 1: Try to find explicit date element
+        date_element = soup.find('span', id='ContentMain_lblDate')
+        if date_element:
+            try:
+                date, stop_parse = self.get_news_create(date_element)
+                if date and not stop_parse:
+                    if self.validate_date(date):
+                        return date, False
+                    else:
+                        return "", True
+            except Exception as ex:
+                self.logger.debug(f"Error parsing explicit date element: {ex}")
+
+        # Method 2: Look for meta tags
+        meta_date = None
+        for meta in soup.find_all('meta'):
+            if meta.get('name') in ['date', 'pubdate', 'publication_date', 'article:published_time']:
+                meta_date = meta.get('content')
+                if meta_date:
+                    try:
+                        # Try to parse ISO format date
+                        date_obj = datetime.fromisoformat(meta_date.replace('Z', '+00:00'))
+                        date = date_obj.strftime("%Y-%m-%d")
+                        if self.validate_date(date):
+                            return date, False
+                    except Exception:
+                        pass
+
+        # Method 3: Try to extract date from the content using regex patterns
+        date_patterns = [
+            # Format: day month year (with Arabic or Western numerals)
+            r'(\d+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+(\d{4})',
+            r'([\u0660-\u0669]+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+([\u0660-\u0669]{4})',
+
+            # Format: day monthname year with specific day names (Thursday, etc.)
+            r'(الخميس|الجمعة|السبت|الأحد|الاثنين|الثلاثاء|الأربعاء)\s+(\d+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+(\d{4})',
+            r'يوم\s+(الخميس|الجمعة|السبت|الأحد|الاثنين|الثلاثاء|الأربعاء)\s+(\d+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+(\d{4})',
+
+            # Format for dates with Arabic numerals and different month naming
+            r'([\u0660-\u0669]+)\s+(كانون الثاني|شباط|آذار|نيسان|أيار|حزيران|تموز|آب|أيلول|تشرين الأول|تشرين الثاني|كانون الأول)\s+([\u0660-\u0669]{4})'
+        ]
+
+        # Prioritize dates in the first 500 characters (more likely to be publication date)
+        # and avoid dates in quotes which are often historical references
+        first_content = news_body[:500]
+        for pattern in date_patterns:
+            match = re.search(pattern, first_content)
+            if match:
+                try:
+                    groups = match.groups()
+                    # Handle different pattern formats
+                    if len(groups) == 3:
+                        day, month_arabic, year = groups
+                    elif len(groups) == 4:
+                        if 'يوم' in pattern:
+                            _, day, month_arabic, year = groups
+                        else:
+                            day, month_arabic, year = groups[1:]
+
+                    # Convert Arabic numerals if needed
+                    if day and ord(day[0]) >= 0x0660 and ord(day[0]) <= 0x0669:
+                        arabic_to_western = self.arabic_to_western()
+                        day = ''.join([arabic_to_western.get(c, c) for c in day])
+                        year = ''.join([arabic_to_western.get(c, c) for c in year])
+
+                    # Convert month name to English
+                    if 'كانون' in month_arabic or 'شباط' in month_arabic or 'آذار' in month_arabic:
+                        month_dict = self.arabic_months_dict_second()
+                    else:
+                        month_dict = self.arabic_months_dict()
+
+                    month = month_dict.get(month_arabic)
+
+                    if month:
+                        date_obj = datetime.strptime(f"{day} {month} {year}", "%d %B %Y")
+                        date = date_obj.strftime("%Y-%m-%d")
+                        if self.validate_date(date):
+                            return date, False
+                except Exception as ex:
+                    self.logger.debug(f"Error parsing content date: {ex}")
+
+        # Method 4: Look for YYYY-MM-DD format in content
+        date_match = re.search(r'(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})', news_body)
+        if date_match:
+            try:
+                year, month, day = date_match.groups()
+                date = f"{year}-{int(month):02d}-{int(day):02d}"
+                if self.validate_date(date):
+                    return date, False
+            except Exception as ex:
+                self.logger.debug(f"Error parsing YYYY-MM-DD date: {ex}")
+
+        # No valid date found
+        return "", True
 
     def get_links_content(self, links: list, search_keyword: str) -> None:
         """
@@ -141,92 +337,11 @@ class NewsMfaGovEg(CheckNewsModel):
                     self.exception_links.append(link)
                     continue
 
-                # Extract date - try multiple approaches
-                date = ""
-                date_element = soup.find('span', id='ContentMain_lblDate')
-
-                if date_element:
-                    # Use existing date parser for explicit date element
-                    date, stop_parse = self.get_news_create(date_element)
-                else:
-                    # Try to extract date from content using regex patterns
-                    date_patterns = [
-                        # Format: day month year (with Arabic or Western numerals)
-                        r'(\d+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+(\d{4})',
-                        r'([\u0660-\u0669]+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+([\u0660-\u0669]{4})',
-
-                        # Format: day monthname year with specific day names (Thursday, etc.)
-                        r'(الخميس|الجمعة|السبت|الأحد|الاثنين|الثلاثاء|الأربعاء)\s+(\d+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+(\d{4})',
-                        r'يوم\s+(الخميس|الجمعة|السبت|الأحد|الاثنين|الثلاثاء|الأربعاء)\s+(\d+)\s+(يناير|فبراير|مارس|أبريل|مايو|يونيو|يوليو|أغسطس|سبتمبر|أكتوبر|نوفمبر|ديسمبر)\s+(\d{4})',
-
-                        # Format for dates with Arabic numerals and different month naming
-                        r'([\u0660-\u0669]+)\s+(كانون الثاني|شباط|آذار|نيسان|أيار|حزيران|تموز|آب|أيلول|تشرين الأول|تشرين الثاني|كانون الأول)\s+([\u0660-\u0669]{4})'
-                    ]
-
-                    date_found = False
-                    for pattern in date_patterns:
-                        match = re.search(pattern, news_body)
-                        if match:
-                            date_found = True
-                            groups = match.groups()
-
-                            # Handle different pattern formats
-                            if len(groups) == 3:
-                                # Standard day-month-year pattern
-                                day, month_arabic, year = groups
-                            elif len(groups) == 4:
-                                # Pattern with weekday included
-                                if 'يوم' in pattern:
-                                    _, day, month_arabic, year = groups
-                                else:
-                                    day, month_arabic, year = groups[1:]
-
-                            # Convert Arabic numerals if needed
-                            if day and ord(day[0]) >= 0x0660 and ord(day[0]) <= 0x0669:
-                                arabic_to_western = self.arabic_to_western()
-                                day = ''.join([arabic_to_western.get(c, c) for c in day])
-                                year = ''.join([arabic_to_western.get(c, c) for c in year])
-
-                            # Convert month name to English
-                            if 'كانون' in month_arabic or 'شباط' in month_arabic or 'آذار' in month_arabic:
-                                month_dict = self.arabic_months_dict_second()
-                            else:
-                                month_dict = self.arabic_months_dict()
-
-                            month = month_dict.get(month_arabic)
-
-                            if month:
-                                try:
-                                    date_obj = datetime.strptime(f"{day} {month} {year}", "%d %B %Y")
-                                    date = date_obj.strftime("%Y-%m-%d")
-
-                                    # Check if date is too old
-                                    stop_parse = date_obj < self.stop_date_create
-                                    break
-                                except Exception as ex:
-                                    self.logger.debug(f"Error parsing date: {ex}")
-
-                    # If no date pattern matched, look for YYYY-MM-DD format
-                    if not date_found:
-                        date_match = re.search(r'(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})', news_body)
-                        if date_match:
-                            year, month, day = date_match.groups()
-                            try:
-                                date_obj = datetime.strptime(f"{year}-{month}-{day}", "%Y-%m-%d")
-                                date = date_obj.strftime("%Y-%m-%d")
-                                stop_parse = date_obj < self.stop_date_create
-                            except Exception:
-                                stop_parse = True
-                        else:
-                            stop_parse = True
-                    else:
-                        stop_parse = False if date else True
+                # Extract and validate date
+                date, stop_parse = self.extract_date_from_content(soup, news_body)
 
                 if not date or stop_parse:
-                    if stop_parse:
-                        self.logger.info(f"Date too old for link: {link}")
-
-                    self.logger.info(f"Date not found or too old for link: {link}")
+                    self.logger.info(f"Date too old or not found for link: {link}, date: {date}")
                     self.exception_links.append(link)
                     continue
 
@@ -242,29 +357,51 @@ class NewsMfaGovEg(CheckNewsModel):
 
                 # Insert to database
                 self.db_client.insert_row(res)
-                self.logger.info(f"Successfully processed: {news_title[:50]}...")
+                self.logger.info(f"Successfully processed: {news_title[:50]}... (Date: {date})")
 
             except Exception as ex:
                 self.logger.error(f"{ex}, link: {link}")
+                if link not in self.exception_links:
+                    self.exception_links.append(link)
 
-    def get_news_create(self, createdby: BeautifulSoup) -> str:
+    def get_news_create(self, createdby: BeautifulSoup) -> tuple:
         if not createdby:
             return '', True
-        arabic_date = createdby.get_text()
-        arabic_months_dict = self.arabic_months_dict_second()
-        parts = arabic_date.split()
-        if len(parts) > 3:
-            day = parts[0]
-            arabic_month = parts[1] + ' ' + parts[2]
-            year = parts[3]
-        else:
-            day, arabic_month, year = parts
-        month = arabic_months_dict.get(arabic_month)
-        date_obj = datetime.strptime(f"{day} {month} {year}", "%d %B %Y")
-        stop_parse = False
-        if date_obj < self.stop_date_create:
-            stop_parse = True
-        return date_obj.strftime("%Y-%m-%d"), stop_parse
+
+        try:
+            arabic_date = createdby.get_text().strip()
+            arabic_months_dict = self.arabic_months_dict_second()
+            parts = arabic_date.split()
+
+            if len(parts) > 3:
+                day = parts[0]
+                arabic_month = parts[1] + ' ' + parts[2]
+                year = parts[3]
+            else:
+                day, arabic_month, year = parts
+
+            month = arabic_months_dict.get(arabic_month)
+            if not month:
+                return '', True
+
+            # Convert Arabic numerals if needed
+            if ord(day[0]) >= 0x0660 and ord(day[0]) <= 0x0669:
+                arabic_to_western = self.arabic_to_western()
+                day = ''.join([arabic_to_western.get(c, c) for c in day])
+                year = ''.join([arabic_to_western.get(c, c) for c in year])
+
+            date_obj = datetime.strptime(f"{day} {month} {year}", "%d %B %Y")
+
+            # Extra validation to avoid extremely old dates
+            if date_obj.year < 2000:
+                return '', True
+
+            stop_parse = date_obj < self.stop_date_create
+            return date_obj.strftime("%Y-%m-%d"), stop_parse
+
+        except Exception as ex:
+            self.logger.warning(f"Error parsing date: {ex}")
+            return '', True
 
     def news_content_response(self, link: str, count_try: int = 0) -> str:
         """
@@ -284,8 +421,6 @@ class NewsMfaGovEg(CheckNewsModel):
             raise Exception(f'Something wrong with news content. Link: {link}')
 
         try:
-            # Try different methods to get the content
-
             # Method 1: Simple requests with SSL verification disabled
             try:
                 response = requests.get(
@@ -341,10 +476,8 @@ class NewsMfaGovEg(CheckNewsModel):
             self.logger.warning(f"All request methods failed for {link}: {str(ex)[:100]}...")
 
             # Implement exponential backoff with jitter
-            import random
             backoff = min(30, 2 ** count_try) + random.uniform(0, 1)
             self.logger.info(f"Retrying in {backoff:.2f} seconds (attempt {count_try + 1}/{self.max_count_try})...")
-            import time
             time.sleep(backoff)
 
         return self.news_content_response(link, count_try + 1)
@@ -433,8 +566,6 @@ class NewsMfaGovEg(CheckNewsModel):
             self.logger.warning(f"All request methods failed for {search_url}: {str(ex)[:100]}...")
 
             # Implement exponential backoff
-            import random
-            import time
             backoff = min(30, 2 ** count_try) + random.uniform(0, 1)
             self.logger.info(f"Retrying in {backoff:.2f} seconds (attempt {count_try + 1}/{self.max_count_try})...")
             time.sleep(backoff)
@@ -445,8 +576,6 @@ class NewsMfaGovEg(CheckNewsModel):
         """
         Get request headers with rotating user agents to avoid blocking.
         """
-        import random
-
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",

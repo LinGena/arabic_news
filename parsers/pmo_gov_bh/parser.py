@@ -159,16 +159,31 @@ class NewsPmoGovBh(CheckNewsModel):
                 # Extract date from the date div
                 news_date = None
                 should_skip = False
-                date_element = soup.select_one('.date')
-
-                if date_element:
-                    date_text = date_element.text.strip()
-                    date_obj = self.parse_date(date_text)
-
-                    if date_obj:
-                        news_date = date_obj.strftime("%Y-%m-%d")
+                url_date_match = re.search(r'(\d{1,2})-(\d{1,2})-(\d{4})$', link)
+                if url_date_match:
+                    day, month, year = url_date_match.groups()
+                    news_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                    try:
+                        date_obj = datetime.strptime(news_date, "%Y-%m-%d")
                         should_skip = date_obj < self.stop_date_create
+                    except ValueError:
+                        news_date = None
 
+                # If no date from URL, try visible text in the date element
+                if not news_date:
+                    date_element = soup.select_one('.date')
+                    if date_element:
+                        # Focus only on the visible text content, ignore datetime attribute
+                        time_element = date_element.find('time')
+                        if time_element:
+                            date_text = time_element.text.strip()
+                        else:
+                            date_text = date_element.text.strip()
+
+                        date_obj = self.parse_date(date_text)
+                        if date_obj:
+                            news_date = date_obj.strftime("%Y-%m-%d")
+                            should_skip = date_obj < self.stop_date_create
                 # If no date found in the page, try extracting from URL
                 if not news_date:
                     # Try to get date from URL - YYYY-MM-DD format
@@ -176,13 +191,51 @@ class NewsPmoGovBh(CheckNewsModel):
                     if date_match:
                         year, month, day = date_match.groups()
                         news_date = f"{year}-{month}-{day}"
-                        date_obj = datetime.strptime(news_date, "%Y-%m-%d")
-                        should_skip = date_obj < self.stop_date_create
+                        try:
+                            date_obj = datetime.strptime(news_date, "%Y-%m-%d")
+                            should_skip = date_obj < self.stop_date_create
+                        except ValueError:
+                            should_skip = True
+
+                # If still no date, try looking for it in the content
+                if not news_date:
+                    # Try to find a date pattern in the first 500 characters of content
+                    content_preview = content[:500]
+                    date_patterns = [
+                        r'(\d{1,2})[/-](\d{1,2})[/-](20\d{2})',  # DD/MM/YYYY or DD-MM-YYYY
+                        r'(20\d{2})[/-](\d{1,2})[/-](\d{1,2})'  # YYYY/MM/DD or YYYY-MM-DD
+                    ]
+
+                    for pattern in date_patterns:
+                        date_match = re.search(pattern, content_preview)
+                        if date_match:
+                            groups = date_match.groups()
+                            if len(groups[0]) == 4:  # YYYY-MM-DD format
+                                year, month, day = groups
+                                news_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                            else:  # DD-MM-YYYY format
+                                day, month, year = groups
+                                news_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+
+                            try:
+                                date_obj = datetime.strptime(news_date, "%Y-%m-%d")
+                                should_skip = date_obj < self.stop_date_create
+                                break
+                            except ValueError:
+                                news_date = None
 
                 # Skip article if it's too old and add to exception list
                 if should_skip:
                     if link not in self.exception_links:
                         self.exception_links.append(link)
+                        self.logger.info(f"Skipping article with date {news_date} (too old): {link}")
+                    continue
+
+                # Skip if we couldn't find a date
+                if not news_date:
+                    if link not in self.exception_links:
+                        self.exception_links.append(link)
+                        self.logger.warning(f"Could not find date for article: {link}")
                     continue
 
                 # Create result dictionary
@@ -195,42 +248,103 @@ class NewsPmoGovBh(CheckNewsModel):
                 if res['is_about']:
                     res['speaker'] = self.speaker
                 self.db_client.insert_row(res)
+                self.logger.info(f"Successfully processed {link} with date {news_date}")
 
             except Exception as ex:
                 self.logger.error(f"Error processing link {link}: {ex}")
+                if link not in self.exception_links:
+                    self.exception_links.append(link)
 
-    def parse_date(self, date_text: str) -> tuple:
-        """Parse Arabic date text into YYYY-MM-DD format and determine if it's too old."""
+    def parse_date(self, date_text: str):
+        """
+        Parse Arabic date text into datetime object.
+
+        Args:
+            date_text: The date text to parse
+
+        Returns:
+            datetime object if parsing successful, None otherwise
+        """
         try:
+            # Clean up the date text
+            date_text = date_text.strip()
+
             # Convert Arabic numerals to Western
             for ar, en in self.arabic_to_western().items():
                 date_text = date_text.replace(ar, en)
 
-            # Convert Arabic month names
-            for ar_month, en_month in self.arabic_months_dict().items():
+            # Define Arabic month names mapping
+            arabic_months = {
+                'يناير': 'January',
+                'فبراير': 'February',
+                'مارس': 'March',
+                'أبريل': 'April',
+                'مايو': 'May',
+                'يونيو': 'June',
+                'يوليو': 'July',
+                'أغسطس': 'August',
+                'سبتمبر': 'September',
+                'أكتوبر': 'October',
+                'نوفمبر': 'November',
+                'ديسمبر': 'December'
+            }
+
+            # Replace Arabic month names with English equivalents
+            for ar_month, en_month in arabic_months.items():
                 if ar_month in date_text:
                     date_text = date_text.replace(ar_month, en_month)
                     break
+
+            # Also try with the standard Arabic months dictionary
+            if not any(month in date_text for month in arabic_months.values()):
+                for ar_month, en_month in self.arabic_months_dict().items():
+                    if ar_month in date_text:
+                        date_text = date_text.replace(ar_month, en_month)
+                        break
 
             # Try different date formats
             for fmt in ["%d %B %Y", "%B %d, %Y", "%d-%m-%Y", "%d/%m/%Y"]:
                 try:
                     date_obj = datetime.strptime(date_text, fmt)
-
-                    # Check if date is too old
-                    should_skip = date_obj < self.stop_date_create
-                    if should_skip:
-                        self.stop_parse_next = True
-
-                    # Return both the formatted date and whether to skip
-                    return date_obj.strftime("%Y-%m-%d"), should_skip
+                    return date_obj
                 except ValueError:
                     continue
 
-            return None, False  # Return default values if no date format matched
+            # If we can't parse the date directly, try to extract parts
+            # This handles cases like "18 نوفمبر 2024" that might not have been
+            # properly converted above
+            import re
+
+            # Try to extract day, month, and year separately
+            day_match = re.search(r'\b(\d{1,2})\b', date_text)
+            year_match = re.search(r'\b(20\d{2})\b', date_text)
+
+            if day_match and year_match:
+                day = int(day_match.group(1))
+                year = int(year_match.group(1))
+
+                # Try to determine the month
+                for ar_month, en_month_name in arabic_months.items():
+                    if ar_month in date_text:
+                        # Get the month number
+                        month_num = {
+                            'January': 1, 'February': 2, 'March': 3, 'April': 4,
+                            'May': 5, 'June': 6, 'July': 7, 'August': 8,
+                            'September': 9, 'October': 10, 'November': 11, 'December': 12
+                        }[en_month_name]
+
+                        try:
+                            return datetime(year, month_num, day)
+                        except ValueError:
+                            # Handle invalid dates
+                            continue
+
+            self.logger.warning(f"Could not parse date: {date_text}")
+            return None
+
         except Exception as ex:
             self.logger.error(f"Error parsing date {date_text}: {ex}")
-            return None, False  # Return default values on exception
+            return None
 
     def get_response(self, news_keyword: str, count_try: int = 0) -> str:
         """Get the first page of search results."""

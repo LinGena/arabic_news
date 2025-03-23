@@ -61,15 +61,25 @@ class Functions():
         }
     
     def get_search_terms(self, return_value: bool = False) -> list:
+        # search_terms = {
+        #     "إسرائيل": "Israel",
+        #     "فلسطين": "Palestine",
+        #     "غزة": "Gaza",
+        #     "الضفة الغربية": "West Bank",
+        #     "القدس": "Jerusalem",
+        #     "حركة حماس": "Hamas",
+        #     "وكالة الأمم المتحدة لإغاثة وتشغيل اللاجئين الفلسطينيين": "UNRWA",
+        #     "المصلى القبلي": "Al-Aqsa"
+        # }
         search_terms = {
             "إسرائيل": "Israel",
             "فلسطين": "Palestine",
             "غزة": "Gaza",
             "الضفة الغربية": "West Bank",
             "القدس": "Jerusalem",
-            "حركة حماس": "Hamas",
-            "وكالة الأمم المتحدة لإغاثة وتشغيل اللاجئين الفلسطينيين": "UNRWA",
-            "المصلى القبلي": "Al-Aqsa"
+            "حماس": "Hamas",
+            "الأونروا": "UNRWA",
+            "الأقصى": "Al-Aqsa"
         }
         return list(search_terms.values()) if return_value else list(search_terms.keys())
     
@@ -107,3 +117,46 @@ class Functions():
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             write_to_file_json(filename, [])
         return load_from_file_json(filename)
+
+    def convert_arabic_date_to_iso(self, arabic_date: str) -> str:
+        """
+        Convert Arabic formatted dates to ISO format (YYYY-MM-DD) for database compatibility
+
+        Args:
+            arabic_date: Date in Arabic format (e.g. "3 أغسطس 2014")
+
+        Returns:
+            Date in ISO format (e.g. "2014-08-03") or None if conversion fails
+        """
+        try:
+            # First, convert any Arabic numerals to Western numerals
+            for ar, en in self.arabic_to_western().items():
+                arabic_date = arabic_date.replace(ar, en)
+
+            parts = arabic_date.split()
+            if len(parts) != 3:
+                self.logger.warning(f"Unexpected date format: {arabic_date}")
+                return None
+
+            day = parts[0].zfill(2)  # Pad with leading zero if needed
+
+            # Try both Arabic month dictionaries
+            month_name = parts[1]
+            month_en = self.arabic_months_dict().get(month_name)
+
+            if not month_en:
+                month_en = self.arabic_months_dict_second().get(month_name)
+
+            if not month_en:
+                self.logger.warning(f"Unknown month: {month_name} in date {arabic_date}")
+                return None
+
+            year = parts[2]
+
+            # Convert to datetime for validation and formatting
+            date_obj = datetime.strptime(f"{day} {month_en} {year}", "%d %B %Y")
+            return date_obj.strftime("%Y-%m-%d")
+        except Exception as e:
+            # Log the error and return None
+            self.logger.error(f"Error converting date '{arabic_date}': {e}")
+            return None
