@@ -21,6 +21,7 @@ from parsers.uaeun_org.parser import NewsUaeunOrg
 from parsers.uae_embassy_org.parser import NewsUaeEmbassyOrg
 from parsers.mfa_gov_eg.parser import NewsMfaGovEg
 from parsers.crownprince_bh.parser import NewsCrownprinceBh
+from parsers.pmo_gov_bh.parser import NewsPmoGovBh
 
 
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
@@ -107,6 +108,10 @@ def parse_crownprince_bh():
     speaker = 'الأمير سلمان بن حمد آل خليفة'
     NewsCrownprinceBh(speaker).get()
 
+def parse_pmo_gov_bh():
+    speaker = 'الأمير سلمان بن حمد آل خليفة'
+    NewsPmoGovBh(speaker).get()
+
 def main():
     functions = [
         parse_bna,
@@ -128,7 +133,7 @@ def main():
         parse_uae_embassy_org,
         parse_mfa_gov_eg,
         parse_crownprince_bh,
-
+        parse_pmo_gov_bh,
     ]
     for func in functions:
         try:
